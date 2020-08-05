@@ -16,7 +16,7 @@
  *
  ******************************************************************************
  */
-#define USE_EEPROM_FUNCTION		1
+#define USE_EEPROM_FUNCTION		0
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
@@ -40,7 +40,8 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-#define DISPLAY_TEXT_MAX_SIZE		64
+#define DISPLAY_TEXT_MAX_SIZE			384
+#define DISPLAY_TEXT_MIN_SIZE			128
 typedef enum
 {
 	st_to_default,
@@ -52,42 +53,98 @@ typedef enum
 typedef enum
 {
 	anim_to_start,
-	anim_start,
-	anim_start_blinking,
+	anim_start_head_anim,
+	anim_head_anim,
 	anim_running,
+	anim_start_tail_anim,
+	anim_tail_anim,
 	anim_end,
-	anim_info
+	anim_check_new
 } StateAnimation_e;
+
+typedef enum
+{
+	HT_NONE = 0,
+	HT_BLINK,
+	HT_BLANK
+} HeadAndTailAnimation_e;
+
+typedef enum
+{
+	SD_NONE = 0,
+	SD_LEFT_TO_RIGHT,
+	SD_RIGHT_TO_LEFT,
+	SD_DOWNWARD,
+	SD_UPWARD
+} ScollingDirection_e;
+
+typedef enum
+{
+	TA_LEFT = 0,
+	TA_RIGHT,
+	TA_CENTER
+} TextAlignment_e;
+
+typedef enum
+{
+	PB_Color_bit = 0,
+	PB_Fontsize_bit = 3,
+	PB_Default_bit = 5,
+	PB_Timeout_bit = 6,
+	PB_HeadAnim_bit = 0,
+	PB_TailAnim_bit = 3,
+	PB_Alignment_bit = 6,
+	PB_Direction_bit = 8
+} ParamBits_e;
 
 typedef struct
 {
 	StateAnimation_e state;
+
+	HeadAndTailAnimation_e headAnimation;
+	HeadAndTailAnimation_e tailAnimation;
+	TextAlignment_e alignment;
+	ScollingDirection_e direction;
+
+	int32_t currentX;
+	int32_t currentY;
 	uint32_t timeout;
 } Animation_t;
 
 typedef enum
 {
 	DISPLAY_TEXT = 0,
-	DISPLAY_BLOCK
-} DisplayType_e;
+	DISPLAY_BLOCK,
+	DISPLAY_RESV
+} DisplayMode_e;
 
 typedef struct
 {
-	DisplayType_e type;
+	DisplayMode_e type;
 	uint8_t fontSize;
 	uint8_t color;
+	bool defaultMode;
 	char msg[DISPLAY_TEXT_MAX_SIZE];
 	uint32_t timeout;
+	Animation_t animation;
 } DisplayText_t;
 
 typedef struct
 {
-	Animation_t animation;
+	bool newTextAvailable;
+	uint8_t state;
+
 	DisplayText_t activeText;
 	DisplayText_t newText;
-	DisplayText_t defaultText;
-	bool newTextAvailable;
-} StateKeeper_t;
+	DisplayText_t DefaultText;
+} RText_t;
+
+typedef struct
+{
+	char buf[10][DISPLAY_TEXT_MIN_SIZE];
+	uint8_t bufPointer;
+	uint8_t maxBuf;
+} FlipTextBuffer_t;
 
 /* USER CODE END PTD */
 
@@ -98,7 +155,7 @@ typedef struct
 uint16_t fps = 0;
 #endif	//if DEBUG==1
 
-#define CMD_BUFSIZE				128
+#define CMD_BUFSIZE				512
 #define TEXT_COLOR				0b001
 
 #define CMD_TIMEOUT				35000
@@ -130,9 +187,9 @@ volatile uint32_t matrix_row = 0;
 volatile uint8_t deactiveMatrix = 0;
 
 char inCmd[CMD_BUFSIZE];
+FlipTextBuffer_t flipTextBuffer;
 
-StateKeeper_t stateKeeper;
-uint8_t activeDisplayState = st_to_default;
+RText_t rText;
 
 #if USE_EEPROM_FUNCTION==1
 const uint16_t START_EE_ADDRESS = 0;
@@ -154,7 +211,7 @@ static void MX_IWDG_Init(void);
 static void startDmaTransfering();
 static void dmaTransferCompleted(DMA_HandleTypeDef *hdma);
 
-static HAL_StatusTypeDef parsingCommand(char *cmd, StateKeeper_t *state);
+static HAL_StatusTypeDef parsingCommand(char *cmd);
 static void commandHandler();
 static void commandInit();
 #if USE_EEPROM_FUNCTION==1
@@ -163,7 +220,11 @@ static void commandEESave(uint8_t color, uint8_t fontSize, char *buf);
 #endif	//if USE_EEPROM_FUNCTION==1
 
 static void displayHandler();
-static void displayAnimation(uint8_t currentState, bool blinking);
+static void parsingFlipText();
+
+static int indexOfStr(char *from, const char *str, uint32_t fromIndex);
+static int indexOfChr(char *from, const char ch, uint32_t fromIndex);
+static void substring(char *from, char *to, uint32_t left, uint32_t right);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -224,8 +285,14 @@ int main(void)
 
 	rgb_frame_clear(0);
 	char headerStart[32];
-	uint16_t headerLen = sprintf(headerStart, "Respati");
-	rgb_print(76, 0, headerStart, headerLen, TEXT_COLOR, 1);
+	uint16_t headerLen = sprintf(headerStart, "RESPATI");
+	uint8_t headerSize = 1;
+	uint8_t headerColor = TEXT_COLOR;
+	rgb_print((MATRIX_MAX_WIDTH - 6 * headerSize * headerLen) / 2, 0, headerStart, headerLen,
+			headerColor, headerSize);
+//	rgb_print((MATRIX_MAX_WIDTH - 6 * headerSize * headerLen) / 2,
+//			(MATRIX_MAX_HEIGHT - 8 * headerSize) / 2, headerStart, headerLen, headerColor,
+//			headerSize);
 	swapBufferStart = 1;
 
 	for ( uint8_t i = 0; i < 5; i++ )
@@ -242,6 +309,25 @@ int main(void)
 	}
 
 #if DEBUG==1
+	char buf[DISPLAY_TEXT_MIN_SIZE];
+	uint16_t bufLen;
+	sprintf(rText.activeText.msg, "asu#tokek#kadal#babi");
+	char *str = rText.activeText.msg;
+	FlipTextBuffer_t *fB = &flipTextBuffer;
+
+	parsingFlipText();
+
+	rgb_frame_clear(0);
+	rgb_print(0, 0, str, strlen(str), TEXT_COLOR, 1);
+
+	bufLen = sprintf(buf, "%d %s %s %s %s", fB->maxBuf, fB->buf[0], fB->buf[1], fB->buf[2],
+			fB->buf[fB->maxBuf - 1]);
+	rgb_print(0, 8, buf, bufLen, TEXT_COLOR, 1);
+	swapBufferStart = 1;
+
+	while (1)
+	HAL_IWDG_Refresh(&hiwdg);
+
 	uint32_t _ms = 0, fpsTimer = 0;
 	while (1)
 	{
@@ -255,7 +341,7 @@ int main(void)
 			rgb_frame_clear(0);
 			headerLen = sprintf(headerStart, "f= %d", fps);
 			fps = 0;
-			rgb_print(64, 0, headerStart, headerLen, TEXT_COLOR, 2);
+			rgb_print(0, 0, headerStart, headerLen, TEXT_COLOR, 2);
 			headerLen = sprintf(headerStart, "%lu", htim2.Init.Period);
 			rgb_print(64, 16, headerStart, headerLen, TEXT_COLOR, 2);
 			swapBufferStart = 1;
@@ -564,215 +650,372 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 /* TODO Function Declaration*/
-static void displayAnimation(uint8_t currentState, bool blinking)
+static int indexOfStr(char *from, const char *str, uint32_t fromIndex)
 {
-	char *text;
-	uint8_t fontColor;
-	uint8_t fontSize;
-	static int16_t xAnimPos = 0;
-	static int16_t yAnimPos = 0;
-	int16_t xAnimEndPos = 0;
-	static uint8_t blinkCounter = 0;
+	uint32_t len = strlen(from);
+	if (fromIndex >= len)
+		return -1;
+	const char *found = strstr(from + fromIndex, str);
+	if (found == NULL)
+		return -1;
+	return found - from;
+}
 
-	if (currentState == st_ops)
+static int indexOfChr(char *from, const char ch, uint32_t fromIndex)
+{
+	uint32_t len = strlen(from);
+	if (fromIndex >= len)
+		return -1;
+	const char* temp = strchr(from + fromIndex, ch);
+	if (temp == NULL)
+		return -1;
+	return temp - from;
+}
+
+static void substring(char *from, char *to, uint32_t left, uint32_t right)
+{
+	uint32_t len = strlen(from);
+	char *out;
+
+	if (left > right)
 	{
-		text = stateKeeper.activeText.msg;
-		fontColor = stateKeeper.activeText.color;
-		fontSize = stateKeeper.activeText.fontSize;
+		unsigned int temp = right;
+		right = left;
+		left = temp;
+	}
+	if (left > len)
+		return;
+	if (right > len)
+		right = len;
+	char temp = from[right];  // save the replaced character
+	from[right] = '\0';
+	out = from + left;  // pointer arithmetic
+	sprintf(to, "%s", out);
+	from[right] = temp;  //restore character
+}
+
+static void startSwapBuffer()
+{
+	while (swapBufferStart == 1)
+		;
+	swapBufferStart = 1;
+}
+
+static void parsingFlipText()
+{
+	int i, start, end;
+	const char delimiter = '\n';
+
+	memset(&flipTextBuffer, 0, sizeof(flipTextBuffer));
+	char *str = rText.activeText.msg;
+
+	i = start = end = 0;
+	for ( i = 0; i < 10; i++ )
+	{
+		if (indexOfChr(str, delimiter, end) < 0)
+		{
+			end = indexOfChr(str, delimiter, start + 1);
+			substring(str, flipTextBuffer.buf[i], start, end < 0 ? strlen(str) : end);
+			break;
+		}
+
+		end = indexOfChr(str, delimiter, start + 1);
+		substring(str, flipTextBuffer.buf[i], start, end < 0 ? strlen(str) : end);
+
+		end++;
+		start = end;
+	}
+	flipTextBuffer.maxBuf = i + 1;
+}
+
+static void runningVerTextDisplay()
+{
+
+	DisplayText_t *dt = &rText.activeText;
+	Animation_t *actAnim = &dt->animation;
+	int32_t x, y;
+	uint32_t len;
+	int32_t hThresshold;
+	FlipTextBuffer_t *fb = &flipTextBuffer;
+
+	rgb_frame_clear(0);
+	for ( int i = 0; i < fb->maxBuf; i++ )
+	{
+		len = strlen(fb->buf[i]);
+		if (len > 0)
+		{
+			if (actAnim->alignment == TA_CENTER)
+				x = (MATRIX_MAX_WIDTH - (int32_t) dt->fontSize * 6 * (int32_t) len) / 2;
+			else
+				x = 0;
+
+			y = (MATRIX_MAX_HEIGHT - 8 * dt->fontSize) / 2;
+			if (actAnim->direction == SD_DOWNWARD)
+				y -= (i * MATRIX_MAX_HEIGHT);
+			else if (actAnim->direction == SD_UPWARD)
+				y += (i * MATRIX_MAX_HEIGHT);
+
+			rgb_print(x + actAnim->currentX, y + actAnim->currentY, fb->buf[i], len, dt->color,
+					dt->fontSize);
+		}
+	}
+	startSwapBuffer();
+
+	if (actAnim->direction == SD_DOWNWARD)
+	{
+		hThresshold = (int32_t) (fb->maxBuf - 1) * MATRIX_MAX_HEIGHT;
+		if (actAnim->currentY % MATRIX_MAX_HEIGHT == 0)
+			actAnim->timeout = HAL_GetTick() + 1500;
+		else
+			actAnim->timeout = HAL_GetTick() + 25;
+
+		actAnim->currentY++;
+		if (actAnim->currentY > hThresshold)
+		{
+			if (actAnim->tailAnimation == HT_BLINK)
+				actAnim->state = anim_start_tail_anim;
+			else if (actAnim->tailAnimation == HT_BLANK)
+				actAnim->state = anim_end;
+			else
+				actAnim->state = anim_end;
+		}
+	}
+	else if (actAnim->direction == SD_UPWARD)
+	{
+		hThresshold = 0 - (int32_t) fb->maxBuf * MATRIX_MAX_HEIGHT;
+		if (actAnim->currentY % MATRIX_MAX_HEIGHT == 0)
+			actAnim->timeout = HAL_GetTick() + 1500;
+		else
+			actAnim->timeout = HAL_GetTick() + 25;
+
+		actAnim->currentY--;
+		if (actAnim->currentY < hThresshold)
+		{
+			if (actAnim->tailAnimation == HT_BLINK)
+				actAnim->state = anim_start_tail_anim;
+			else if (actAnim->tailAnimation == HT_BLANK)
+				actAnim->state = anim_end;
+			else
+				actAnim->state = anim_end;
+		}
+	}
+}
+static void runningHorTextDisplay()
+{
+	DisplayText_t *dt = &rText.activeText;
+	Animation_t *actAnim = &dt->animation;
+	int32_t xAnimEndPos;
+
+	rgb_frame_clear(0);
+	xAnimEndPos = rgb_print_constrain(actAnim->currentX, actAnim->currentY, dt->msg,
+			strlen(dt->msg), dt->color, dt->fontSize, 0, MATRIX_MAX_WIDTH, 0,
+			MATRIX_MAX_HEIGHT);
+	startSwapBuffer();
+	if (actAnim->tailAnimation == HT_BLANK)
+		xAnimEndPos += MATRIX_MAX_WIDTH;
+	if (xAnimEndPos >= MATRIX_MAX_WIDTH)
+	{
+		actAnim->currentX--;
+		actAnim->timeout = HAL_GetTick() + 25;
 	}
 	else
 	{
-		text = stateKeeper.defaultText.msg;
-		fontColor = stateKeeper.defaultText.color;
-		fontSize = stateKeeper.defaultText.fontSize;
-	}
-
-	if (stateKeeper.animation.state == anim_to_start)
-	{
-		if (currentState == st_ops)
-		{
-			if (stateKeeper.newTextAvailable && (stateKeeper.newText.type == DISPLAY_TEXT))
-			{
-				stateKeeper.activeText = stateKeeper.newText;
-				stateKeeper.newTextAvailable = false;
-				text = stateKeeper.activeText.msg;
-				fontColor = stateKeeper.activeText.color;
-				fontSize = stateKeeper.activeText.fontSize;
-			}
-		}
-
-		if ((strchr(text, '\r') != NULL) || (strchr(text, '\n') != NULL))
-		{
-			rgb_frame_clear(0);
-			rgb_print_constrain(0, 0, text, strlen(text), fontColor, fontSize, 0,
-			MATRIX_MAX_WIDTH, 0, MATRIX_MAX_HEIGHT);
-
-			swapBufferStart = 1;
-			stateKeeper.animation.state = anim_info;
-		}
+		if (actAnim->tailAnimation == HT_BLINK)
+			actAnim->state = anim_start_tail_anim;
+		else if (actAnim->tailAnimation == HT_BLANK)
+			actAnim->state = anim_end;
 		else
 		{
-			blinkCounter = 0;
-			if (blinking)
-				stateKeeper.animation.state = anim_start_blinking;
-			else
-			{
-				rgb_frame_clear(0);
-				xAnimPos = 0;
-				yAnimPos = (MATRIX_MAX_HEIGHT - 8 * fontSize) / 2;
-				rgb_print_constrain(xAnimPos, yAnimPos, text, strlen(text), fontColor, fontSize, 0,
-				MATRIX_MAX_WIDTH, 0, MATRIX_MAX_HEIGHT);
-
-				swapBufferStart = 1;
-
-				stateKeeper.animation.timeout = HAL_GetTick() + 1000;
-				stateKeeper.animation.state = anim_start;
-			}
+			actAnim->state = anim_end;
+			actAnim->timeout = HAL_GetTick() + 1000;
 		}
-	}
-	else if (stateKeeper.animation.state == anim_info)
-	{
-		if (currentState == st_ops)
-		{
-			if (stateKeeper.newTextAvailable && (stateKeeper.newText.type == DISPLAY_TEXT))
-				stateKeeper.animation.state = anim_to_start;
-		}
-	}
-	else if (stateKeeper.animation.state == anim_start_blinking)
-	{
-		if (HAL_GetTick() >= stateKeeper.animation.timeout)
-		{
-			if (++blinkCounter > 6)
-				stateKeeper.animation.state = anim_running;
-			else
-			{
-				rgb_frame_clear(0);
-				if (bitRead(blinkCounter, 0))
-				{
-					xAnimPos = 0;
-					yAnimPos = (MATRIX_MAX_HEIGHT - 8 * fontSize) / 2;
-					rgb_print_constrain(xAnimPos, yAnimPos, text, strlen(text), fontColor, fontSize,
-							0,
-							MATRIX_MAX_WIDTH, 0, MATRIX_MAX_HEIGHT);
-				}
-				swapBufferStart = 1;
-
-				stateKeeper.animation.timeout = HAL_GetTick() + 250;
-			}
-		}
-	}
-	else if (stateKeeper.animation.state == anim_start)
-	{
-		if (HAL_GetTick() >= stateKeeper.animation.timeout)
-			stateKeeper.animation.state = anim_running;
-	}
-	else if (stateKeeper.animation.state == anim_running)
-	{
-		if (HAL_GetTick() >= stateKeeper.animation.timeout)
-		{
-			rgb_frame_clear(0);
-			xAnimEndPos = rgb_print_constrain(xAnimPos, yAnimPos, text, strlen(text), fontColor,
-					fontSize, 0, MATRIX_MAX_WIDTH, 0, MATRIX_MAX_HEIGHT);
-			swapBufferStart = 1;
-			if (xAnimEndPos >= MATRIX_MAX_WIDTH)
-			{
-				xAnimPos--;
-				stateKeeper.animation.timeout = HAL_GetTick() + 30;
-			}
-			else
-			{
-				stateKeeper.animation.state = anim_end;
-				stateKeeper.animation.timeout = HAL_GetTick() + 1000;
-			}
-		}
-	}
-	else if (stateKeeper.animation.state == anim_end)
-	{
-		if (HAL_GetTick() >= stateKeeper.animation.timeout)
-			stateKeeper.animation.state = anim_to_start;
 	}
 }
 
-static void displayCheckState()
+static void displayTextAnimation()
 {
-	if (stateKeeper.newTextAvailable)
-	{
-		if (stateKeeper.newText.type == DISPLAY_TEXT)
-		{
-			activeDisplayState = st_ops;
-			stateKeeper.animation.state = anim_to_start;
-		}
-		else if (stateKeeper.newText.type == DISPLAY_BLOCK)
-			activeDisplayState = st_block;
+	DisplayText_t *dt = &rText.activeText;
+	Animation_t *actAnim = &dt->animation;
+	StateAnimation_e *state = &actAnim->state;
+	static uint8_t blinkCounter = 0;
 
-		stateKeeper.animation.state = anim_to_start;
+	switch (*state)
+	{
+	case anim_to_start:
+		/* format text according to scrolling direction */
+		actAnim->currentX = 0;
+		actAnim->currentY = (MATRIX_MAX_HEIGHT - 8 * dt->fontSize) / 2 + (dt->fontSize / 2);
+		if ((actAnim->direction == SD_DOWNWARD) || (actAnim->direction == SD_UPWARD))
+		{
+			parsingFlipText();
+			actAnim->currentX = actAnim->currentY = 0;
+		}
+
+		/* add head animation */
+		switch (actAnim->headAnimation)
+		{
+		case HT_BLINK:
+			/* add timeout */
+			actAnim->timeout = 250;
+			/* move to anim_start_head_anim */
+			blinkCounter = 0;
+			*state = anim_start_head_anim;
+			break;
+		case HT_BLANK:
+			/* add blank space with width = MATRIX_MAX_WIDTH */
+			actAnim->currentX = MATRIX_MAX_WIDTH;
+		default:
+			actAnim->timeout = 1000;
+			/* command blank display with refresh cmd_timeout */
+			if (actAnim->direction == SD_NONE && dt->color == 0)
+				*state = anim_check_new;
+			else
+				*state = anim_running;
+			break;
+		}
+
+		if (actAnim->direction == SD_LEFT_TO_RIGHT)
+		{
+			rgb_frame_clear(0);
+			rgb_print(actAnim->currentX, actAnim->currentY, dt->msg, strlen(dt->msg), dt->color,
+					dt->fontSize);
+			startSwapBuffer();
+		}
+		break;
+	case anim_start_head_anim:
+		if (HAL_GetTick() >= actAnim->timeout)
+		{
+			rgb_frame_clear(0);
+			if (bitRead(blinkCounter, 0))
+				rgb_print(actAnim->currentX, actAnim->currentY, dt->msg, strlen(dt->msg), dt->color,
+						dt->fontSize);
+			startSwapBuffer();
+			actAnim->timeout = HAL_GetTick() + 250;
+
+			if (++blinkCounter >= 6)
+				actAnim->state = anim_running;
+		}
+		break;
+	case anim_head_anim:
+		break;
+	case anim_running:
+		if (HAL_GetTick() >= actAnim->timeout)
+		{
+			if (actAnim->direction == SD_LEFT_TO_RIGHT)
+				runningHorTextDisplay();
+			else if ((actAnim->direction == SD_DOWNWARD) || (actAnim->direction == SD_UPWARD))
+				runningVerTextDisplay();
+		}
+		break;
+	case anim_start_tail_anim:
+		blinkCounter = 0;
+		actAnim->state = anim_tail_anim;
+		actAnim->timeout = HAL_GetTick() + 250;
+		break;
+	case anim_tail_anim:
+		rgb_frame_clear(0);
+		if (bitRead(blinkCounter, 0))
+		{
+			rgb_print_constrain(actAnim->currentX, actAnim->currentY, dt->msg, strlen(dt->msg),
+					dt->color, dt->fontSize, 0, MATRIX_MAX_WIDTH, 0,
+					MATRIX_MAX_HEIGHT);
+		}
+		startSwapBuffer();
+		actAnim->timeout = HAL_GetTick() + 250;
+		if (++blinkCounter > 6)
+			actAnim->state = anim_end;
+		break;
+	case anim_end:
+		if (HAL_GetTick() >= actAnim->timeout)
+			actAnim->state = anim_check_new;
+		break;
+	default:
+		actAnim->state = anim_to_start;
+		break;
+
 	}
+}
+
+static void checkNewCommand()
+{
+	if (rText.newTextAvailable)
+	{
+		if (rText.newText.type == DISPLAY_TEXT)
+		{
+			//if currently running default animation
+			if (rText.activeText.defaultMode)
+			{
+				rText.activeText = rText.newText;
+				rText.activeText.timeout = HAL_GetTick() + CMD_TIMEOUT;
+				rText.state = st_ops;
+				rText.activeText.animation.state = anim_to_start;
+				rText.newTextAvailable = false;
+			}  //if (!rText.activeText.defaultMode)
+			else
+			{
+				// if not in block type
+				if (rText.activeText.type == DISPLAY_TEXT)
+				{
+					// if not running animation
+					if (rText.activeText.animation.state == anim_check_new)
+					{
+						/* swap new text to active text */
+						rText.activeText = rText.newText;
+						rText.activeText.timeout = HAL_GetTick() + CMD_TIMEOUT;
+						rText.state = st_ops;
+						rText.activeText.animation.state = anim_to_start;
+						rText.newTextAvailable = false;
+					}
+				}
+			}  //if (!rText.activeText.defaultMode) .. else ..
+		}  //if (rText.newText.type == DISPLAY_TEXT)
+		else if (rText.newText.type == DISPLAY_BLOCK)
+		{
+			rText.activeText = rText.newText;
+			rText.state = st_block;
+			rgb_frame_clear(rText.activeText.color);
+			startSwapBuffer();
+			rText.newTextAvailable = false;
+		}  //else if (rText.newText.type == DISPLAY_BLOCK){
+	}  //if (rText.newTextAvailable)
 }
 
 static void displayHandler()
 {
-	if (activeDisplayState != st_default && !stateKeeper.newTextAvailable)
+	checkNewCommand();
+
+// if timeout
+	if (rText.state != st_default && (HAL_GetTick() >= rText.activeText.timeout))
 	{
-		if (HAL_GetTick() >= stateKeeper.activeText.timeout)
-		{
-			stateKeeper.activeText = stateKeeper.defaultText;
-			stateKeeper.activeText.timeout = 0;
-			activeDisplayState = st_default;
-			stateKeeper.animation.state = anim_to_start;
-			stateKeeper.animation.timeout = HAL_GetTick() + 1000;
-		}
+		rText.activeText = rText.DefaultText;
+		rText.activeText.timeout = 0;
+		rText.state = st_default;
+		rText.activeText.animation.state = anim_to_start;
 	}
 
-	if (activeDisplayState == st_block)
-	{
-		if ((stateKeeper.newTextAvailable) && (stateKeeper.newText.type == DISPLAY_BLOCK))
-		{
-			stateKeeper.activeText = stateKeeper.newText;
-			rgb_frame_clear(stateKeeper.activeText.color);
-			swapBufferStart = 1;
-			stateKeeper.newTextAvailable = false;
-		}
-
-		if (HAL_GetTick() >= stateKeeper.activeText.timeout)
-			activeDisplayState = st_to_default;
-	}
-	else if (activeDisplayState == st_ops)
-	{
-		if ((stateKeeper.newTextAvailable) && (stateKeeper.newText.type == DISPLAY_BLOCK))
-			activeDisplayState = st_block;
-
-		displayAnimation(st_ops, 1);
-	}
-	else if (activeDisplayState == st_to_default)
-		displayCheckState();
-	else
-	{
-		displayAnimation(st_default, 1);
-		displayCheckState();
-	}
-
+	if (rText.activeText.type == DISPLAY_TEXT)
+		displayTextAnimation();
 }
 
-static HAL_StatusTypeDef parsingCommand(char *cmd, StateKeeper_t *state)
+static HAL_StatusTypeDef parsingCommand(char *cmd)
 {
 	char *pointer = cmd;
 	char tem[DISPLAY_TEXT_MAX_SIZE];
 	uint16_t pos;
-	bool defCmd = false;
 	uint16_t i;
 	uint16_t msgIndex;
-	uint8_t fontSize = 0, fontColor = 0;
-	DisplayType_e newType = DISPLAY_TEXT;
+	uint32_t u32;
+	uint16_t param1 = 0, param2 = 0;
+	char cFind, cFind2;
+	DisplayText_t *dt = &rText.newText;
 
-	/* skip header byte */
-	pointer++;
-
-	/* acquire cmd type */
+	/* check header bytes */
 	memset(tem, 0, DISPLAY_TEXT_MAX_SIZE);
 	pos = strlen(pointer);
+	cFind = ',';
 	for ( i = 0; i < pos; i++ )
 	{
-		if (*pointer != ',')
+		if (*pointer != cFind)
 			tem[i] = *pointer++;
 		else
 			break;
@@ -781,75 +1024,107 @@ static HAL_StatusTypeDef parsingCommand(char *cmd, StateKeeper_t *state)
 	if ((i >= pos) && (strlen(tem) == 0))
 		return HAL_ERROR;
 
-	if (strcmp(tem, "BLK") == 0)
-		newType = DISPLAY_BLOCK;
-	else if (strcmp(tem, "MSG") == 0)
-		newType = DISPLAY_TEXT;
-	else if (strcmp(tem, "DEF") == 0)
+	if (strcmp(tem, "$RTEXT") != 0)
+		return HAL_ERROR;
+
+	memset(&rText.newText, 0, sizeof(rText.newText));
+
+	/* find display type */
+	pointer++;
+	memset(tem, 0, DISPLAY_TEXT_MAX_SIZE);
+	pos = strlen(pointer);
+	cFind = ',';
+	for ( i = 0; i < pos; i++ )
 	{
-		newType = DISPLAY_TEXT;
-		defCmd = true;
+		if (*pointer == cFind)
+			break;
+		else
+			tem[i] = *pointer++;
 	}
+	if ((i >= pos) && (strlen(tem) == 0))
+		return HAL_ERROR;
+	u32 = atoi(tem);
+	if (u32 < DISPLAY_RESV)
+		dt->type = atoi(tem);
 	else
 		return HAL_ERROR;
 
-	/* acquire text color */
+	/* find params I */
+	param1 = 0;
 	pointer++;
 	memset(tem, 0, DISPLAY_TEXT_MAX_SIZE);
 	pos = strlen(pointer);
+	cFind = ',';
+	cFind2 = '*';
 	for ( i = 0; i < pos; i++ )
 	{
-		if (*pointer == ',')
+		if ((*pointer == cFind) || (*pointer == cFind2))
 			break;
 		else
 			tem[i] = *pointer++;
 	}
 	if ((i >= pos) && (strlen(tem) == 0))
 		return HAL_ERROR;
+	param1 = strtol(tem, NULL, 16);
 
-	fontColor = atoi(tem) % 8;
-
-	if (newType == DISPLAY_BLOCK)
+	/* find params II */
+	param2 = 0;
+	pointer++;
+	memset(tem, 0, DISPLAY_TEXT_MAX_SIZE);
+	pos = strlen(pointer);
+	cFind = ',';
+	cFind2 = '*';
+	for ( i = 0; i < pos; i++ )
 	{
-		/* acquire block timeout */
-		pointer++;
-		memset(tem, 0, DISPLAY_TEXT_MAX_SIZE);
-		pos = strlen(pointer);
-		for ( i = 0; i < pos; i++ )
-		{
-			if (*pointer == '*')
-				break;
-			else
-				tem[i] = *pointer++;
-		}
-		if ((i >= pos) && (strlen(tem) == 0))
-			return HAL_ERROR;
-
-		state->newText.type = newType;
-		state->newText.color = fontColor;
-		state->newTextAvailable = true;
-		state->newText.timeout = atoi(tem) + HAL_GetTick();
+		if ((*pointer == cFind) || (*pointer == cFind2))
+			break;
+		else
+			tem[i] = *pointer++;
 	}
-	else if (newType == DISPLAY_TEXT)
-	{
-		/* acquire text size */
-		pointer++;
-		memset(tem, 0, DISPLAY_TEXT_MAX_SIZE);
-		pos = strlen(pointer);
-		for ( i = 0; i < pos; i++ )
-		{
-			if (*pointer == ',')
-				break;
-			else
-				tem[i] = *pointer++;
-		}
-		if ((i >= pos) && (strlen(tem) == 0))
-			return HAL_ERROR;
-		fontSize = atoi(tem) % 5;
+	if ((i >= pos) && (strlen(tem) == 0))
+		return HAL_ERROR;
+	param2 = strtol(tem, NULL, 16);
 
-		/* acquire text */
+	/* parsing params */
+	/* color */
+	dt->color = param1 & 0b111;
+	if (dt->type == DISPLAY_BLOCK)
+	{
+		/* default mode */
+		dt->defaultMode = 0;
+		/* fontsize */
+		/* timeout in 1s */
+		dt->timeout = (param1 >> PB_Timeout_bit) & 0xFF;
+		dt->timeout *= 1000;  //convert to ms
+		dt->timeout += HAL_GetTick();  // add to current time
+		/* head animation */
+		/* tail animation */
+		/* alignment */
+		/* direction */
+	}
+	else if (dt->type == DISPLAY_TEXT)
+	{
+		/* default */
+		dt->defaultMode = bitRead(param1, PB_Default_bit);
+		/* fontsize */
+		dt->fontSize = ((param1 >> PB_Fontsize_bit) & 0b11) + 1;
+		/* timeout in 1s */
+		/* head animation */
+		dt->animation.headAnimation = (param2 >> PB_HeadAnim_bit) & 0b111;
+		/* tail animation */
+		dt->animation.tailAnimation = (param2 >> PB_TailAnim_bit) & 0b111;
+		/* direction */
+		dt->animation.direction = (param2 >> PB_Direction_bit) & 0xF;
+		/* alignment */
+		dt->animation.alignment = (param2 >> PB_Alignment_bit) & 0b11;
+	}
+
+	/* acquire text */
+	if (dt->type == DISPLAY_TEXT)
+	{
+		cFind = '\"';
 		pointer++;
-		if (*pointer != '\"')
+		if (*pointer != cFind)
 			return HAL_ERROR;
 
 		pointer++;
@@ -858,45 +1133,29 @@ static HAL_StatusTypeDef parsingCommand(char *cmd, StateKeeper_t *state)
 		msgIndex = 0;
 		for ( i = 0; i < pos; i++ )
 		{
-			if (*pointer == '\"')
-			{
-				if ((msgIndex > 0) && ((tem[msgIndex - 1] == '\\')))
-					msgIndex--;
-				else
-					break;
-			}
+			if (*pointer == cFind)
+				break;
 
 			tem[msgIndex++] = *pointer++;
 		}
 		if ((i >= pos) && (strlen(tem) == 0))
 			return HAL_ERROR;
 
-		if (defCmd)
-		{
-			state->defaultText.type = newType;
-			state->defaultText.color = fontColor;
-			state->defaultText.fontSize = fontSize;
-			/* re-write default message */
-			memset(state->defaultText.msg, 0, DISPLAY_TEXT_MAX_SIZE);
-			memcpy(state->defaultText.msg, tem, strlen(tem));
-			/* save to eeprom */
-#if USE_EEPROM_FUNCTION==1
-			commandEESave(fontColor, fontSize, state->defaultText.msg);
-#endif	//if USE_EEPROM_FUNCTION==1
-		}
-		else
-		{
-			state->newText.type = newType;
-			state->newText.color = fontColor;
-			state->newText.fontSize = fontSize;
-			/* re-write msg buffer */
-			memset(state->newText.msg, 0, DISPLAY_TEXT_MAX_SIZE);
-			memcpy(state->newText.msg, tem, strlen(tem));
-
-			state->newTextAvailable = true;
-			state->newText.timeout = CMD_TIMEOUT + HAL_GetTick();
-		}
+		memcpy(dt->msg, tem, strlen(tem));
 	}
+
+	if (!dt->defaultMode)
+		rText.newTextAvailable = true;
+	else
+		rText.DefaultText = *dt;
+
+//	char buf[DISPLAY_TEXT_MAX_SIZE];
+//	uint16_t bufLen;
+//	bufLen = sprintf(buf, "%d %X %X %d %d %d\r\n%s", dt->type, param1, param2, dt->color,
+//			dt->fontSize, dt->defaultMode, dt->msg);
+//	rgb_frame_clear(0);
+//	rgb_print(0, 0, buf, bufLen, 1, 1);
+//	swapBufferStart = 1;
 
 	return HAL_OK;
 }
@@ -919,22 +1178,39 @@ static void commandHandler()
 	}
 
 	if (command_available)
-		parsingCommand(inCmd, &stateKeeper);
+		parsingCommand(inCmd);
 }
 
 static void commandInit()
 {
-	/* initialize stateKeeper */
-	stateKeeper.activeText.color = 0;
-	stateKeeper.activeText.fontSize = 1;
-	stateKeeper.activeText.type = DISPLAY_TEXT;
-	memset(stateKeeper.activeText.msg, 0, DISPLAY_TEXT_MAX_SIZE);
-	stateKeeper.activeText.timeout = HAL_GetTick() + CMD_TIMEOUT;
+	rText.newTextAvailable = false;
+	rText.state = st_to_default;
+	memset(&rText.DefaultText, 0, sizeof(rText.DefaultText));
+	memset(&rText.activeText, 0, sizeof(rText.activeText));
+	memset(&rText.newText, 0, sizeof(rText.newText));
 
-	stateKeeper.defaultText.color = 1;
-	stateKeeper.defaultText.fontSize = 2;
-	stateKeeper.defaultText.type = DISPLAY_TEXT;
-	sprintf(stateKeeper.defaultText.msg, "PT KERETA API INDONESIA (PERSERO)");
+	/* Initialize RText's default text struct */
+	DisplayText_t *dt = &rText.DefaultText;
+
+	dt->color = 1;
+	dt->defaultMode = true;
+	dt->fontSize = 2;
+	dt->type = DISPLAY_TEXT;
+	dt->timeout = HAL_GetTick() + CMD_TIMEOUT;
+	sprintf(dt->msg, "PT KERETA API INDONESIA (PERSERO)");
+
+	dt->animation.alignment = TA_LEFT;
+	dt->animation.direction = SD_LEFT_TO_RIGHT;
+	dt->animation.headAnimation = HT_BLINK;
+	dt->animation.tailAnimation = HT_NONE;
+
+//	char buf[DISPLAY_TEXT_MAX_SIZE];
+//	uint16_t bufLen;
+//	bufLen = sprintf(buf, "%d %d %d %d\r\n%s", dt->type, dt->color, dt->fontSize, dt->defaultMode,
+//			dt->msg);
+//	rgb_frame_clear(0);
+//	rgb_print(0, 0, buf, bufLen, 1, 1);
+//	swapBufferStart = 1;
 
 #if USE_EEPROM_FUNCTION==1
 	commandEEInit();
@@ -953,8 +1229,8 @@ static void commandEEInit()
 	if (EE_Read(START_EE_ADDRESS, &data))
 	{
 		if ((data & formatMask) != FORMATED_BYTES)
-			commandEESave(stateKeeper.defaultText.color, stateKeeper.defaultText.fontSize,
-					stateKeeper.defaultText.msg);
+		commandEESave(stateKeeper.defaultText.color, stateKeeper.defaultText.fontSize,
+				stateKeeper.defaultText.msg);
 		else
 		{
 			/* retrieve font color & size */
@@ -970,7 +1246,7 @@ static void commandEEInit()
 				{
 					data = defText[i];
 					for ( int j = 0; j < 4; j++ )
-						stateKeeper.defaultText.msg[i * 4 + j] = (char) (data >> (8 * j));
+					stateKeeper.defaultText.msg[i * 4 + j] = (char) (data >> (8 * j));
 				}
 			}
 		}
@@ -987,11 +1263,11 @@ static void commandEESave(uint8_t color, uint8_t fontSize, char *buf)
 	rgb_frame_clear(0);
 	swapBufferStart = 1;
 	while (swapBufferStart)
-		;
+	;
 	/* temporary de-active display matrix */
 	deactiveMatrix = 1;
 	while (deactiveMatrix)
-		;
+	;
 
 	EE_Format();
 
@@ -1000,7 +1276,7 @@ static void commandEESave(uint8_t color, uint8_t fontSize, char *buf)
 	{
 		data = 0;
 		for ( int j = 0; j < 4; j++ )
-			data |= (uint32_t) (*buf++) << (8 * j);
+		data |= (uint32_t) (*buf++) << (8 * j);
 		EE_Write(START_EE_ADDRESS + 1 + i, data);
 	}
 

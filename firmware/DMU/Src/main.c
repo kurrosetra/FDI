@@ -649,7 +649,6 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 /* TODO Function Declaration*/
-
 static int indexOfStr(char *from, const char *str, uint32_t fromIndex)
 {
 	uint32_t len = strlen(from);
@@ -701,7 +700,6 @@ static void startSwapBuffer()
 	swapBufferStart = 1;
 }
 
-/* TODO parsing flip text*/
 static void parsingFlipText()
 {
 	int i, start, end;
