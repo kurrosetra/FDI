@@ -55,9 +55,9 @@ void rgb_frame_clear(uint8_t color)
 	}
 }
 
-void rgb_draw_pixel(int16_t x, int16_t y, uint8_t color)
+void rgb_draw_pixel(int32_t x, int32_t y, uint8_t color)
 {
-	uint16_t row, lines;
+	uint32_t row, lines;
 	uint8_t rgbVal = 0;
 	uint8_t bufferIndex = 0;
 
@@ -72,7 +72,7 @@ void rgb_draw_pixel(int16_t x, int16_t y, uint8_t color)
 #endif	//if FRAME_ORIENTATION==FRAME_ORIENTATION_3
 
 #if (FRAME_ORIENTATION==FRAME_ORIENTATION_2)||(FRAME_ORIENTATION==FRAME_ORIENTATION_4)
-	int16_t xy=x;
+	int32_t xy=x;
 
 	x=y;
 	y=xy;
@@ -94,7 +94,7 @@ void rgb_draw_pixel(int16_t x, int16_t y, uint8_t color)
 
 		/* TODO handle color*/
 #if DISPLAY_P475
-		rgbVal = color;
+		rgbVal = color % 4;
 
 		frameBuffer[bufferIndex][row][lines * 2] = rgbVal;
 		frameBuffer[bufferIndex][row][lines * 2 + 1] = rgbVal | clk_Pin;
@@ -109,14 +109,14 @@ void rgb_draw_pixel(int16_t x, int16_t y, uint8_t color)
 	}
 }
 
-void rgb_write_constrain(int16_t x, int16_t y, char c, uint8_t color, uint8_t fontSize,
-		int16_t xMin, int16_t xMax, int16_t yMin, int16_t yMax)
+void rgb_write_constrain(int32_t x, int32_t y, char c, uint8_t color, uint8_t fontSize,
+		int32_t xMin, int32_t xMax, int32_t yMin, int32_t yMax)
 {
 	uint8_t getFont[5];
-	uint16_t fontPos = (uint16_t) c;
-	uint16_t xPos, yPos;
-	uint16_t xBit, yBit;
-	uint16_t xSize, ySize;
+	uint32_t fontPos = (uint32_t) c;
+	uint32_t xPos, yPos;
+	uint32_t xBit, yBit;
+	uint32_t xSize, ySize;
 
 	for ( xPos = 0; xPos < FONT_X_SIZE; xPos++ )
 		getFont[xPos] = *(font5x7 + (fontPos * FONT_X_SIZE) + xPos);
@@ -257,17 +257,17 @@ void rgb_write_constrain(int16_t x, int16_t y, char c, uint8_t color, uint8_t fo
 
 }
 
-void rgb_write(int16_t x, int16_t y, char c, uint8_t color, uint8_t fontSize)
+void rgb_write(int32_t x, int32_t y, char c, uint8_t color, uint8_t fontSize)
 {
 	rgb_write_constrain(x, y, c, color, fontSize, 0, MATRIX_MAX_WIDTH - 1, 0,
 	MATRIX_MAX_HEIGHT - 1);
 }
 
-void rgb_print(int16_t x, int16_t y, char* s, uint16_t size, uint8_t color, uint8_t fontSize)
+void rgb_print(int32_t x, int32_t y, char* s, uint32_t size, uint8_t color, uint8_t fontSize)
 {
-	uint16_t rCharPos = 0;
-	uint16_t nCharPos = 0;
-	for ( uint16_t i = 0; i < size; i++ )
+	uint32_t rCharPos = 0;
+	uint32_t nCharPos = 0;
+	for ( uint32_t i = 0; i < size; i++ )
 	{
 		if (*(s + i) == '\r')
 			rCharPos = i + 1;
@@ -283,15 +283,15 @@ void rgb_print(int16_t x, int16_t y, char* s, uint16_t size, uint8_t color, uint
 	}
 }
 
-int16_t rgb_print_constrain(int16_t x, int16_t y, char* s, uint16_t size, uint8_t color,
-		uint8_t fontSize, int16_t xMin, int16_t xMax, int16_t yMin, int16_t yMax)
+int32_t rgb_print_constrain(int32_t x, int32_t y, char* s, uint32_t size, uint8_t color,
+		uint8_t fontSize, int32_t xMin, int32_t xMax, int32_t yMin, int32_t yMax)
 {
-	int16_t ret = 0;
+	int32_t ret = 0;
 	if (size)
 	{
-		uint16_t rCharPos = 0;
-		uint16_t nCharPos = 0;
-		for ( uint16_t i = 0; i < size; i++ )
+		uint32_t rCharPos = 0;
+		uint32_t nCharPos = 0;
+		for ( uint32_t i = 0; i < size; i++ )
 		{
 //			rgb_write_constrain(x + (i * (FONT_X_SIZE * fontSize + fontSize)), y, *(s + i), color,
 //					fontSize, xMin, xMax, yMin, yMax);
@@ -309,7 +309,7 @@ int16_t rgb_print_constrain(int16_t x, int16_t y, char* s, uint16_t size, uint8_
 						xMax, yMin, yMax);
 
 		}
-		ret = size * (FONT_X_SIZE * fontSize + fontSize) + x;
+		ret = (int32_t)size * (FONT_X_SIZE * fontSize + fontSize) + x;
 	}
 
 	return ret;
