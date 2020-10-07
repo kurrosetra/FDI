@@ -87,6 +87,12 @@ typedef enum
 
 typedef enum
 {
+	VA_CENTER = 0,
+	VA_UP
+} VerticalAlignment_e;
+
+typedef enum
+{
 	PB_Color_bit = 0,
 	PB_Fontsize_bit = 3,
 	PB_Default_bit = 5,
@@ -104,6 +110,7 @@ typedef struct
 	HeadAndTailAnimation_e headAnimation;
 	HeadAndTailAnimation_e tailAnimation;
 	TextAlignment_e alignment;
+	VerticalAlignment_e vAlign;
 	ScollingDirection_e direction;
 
 	int32_t currentX;
@@ -302,11 +309,9 @@ int main(void)
 	}
 	rgb_frame_clear(0);
 	swapBufferStart = 1;
-	for ( uint8_t i = 0; i < 5; i++ )
-	{
-		HAL_IWDG_Refresh(&hiwdg);
-		HAL_Delay(100);
-	}
+
+	while (swapBufferStart != 0)
+		;
 
 #if DEBUG==1
 	char buf[DISPLAY_TEXT_MIN_SIZE];
@@ -727,7 +732,6 @@ static void parsingFlipText()
 	}
 	flipTextBuffer.maxBuf = i + 1;
 }
-
 static void runningVerTextDisplay()
 {
 
@@ -763,7 +767,11 @@ static void runningVerTextDisplay()
 
 	if (actAnim->direction == SD_DOWNWARD)
 	{
-		hThresshold = (int32_t) (fb->maxBuf - 1) * MATRIX_MAX_HEIGHT;
+		if (actAnim->tailAnimation == HT_BLANK)
+			hThresshold = (int32_t) fb->maxBuf * MATRIX_MAX_HEIGHT;
+		else
+			hThresshold = (int32_t) (fb->maxBuf - 1) * MATRIX_MAX_HEIGHT;
+
 		if (actAnim->currentY % MATRIX_MAX_HEIGHT == 0)
 			actAnim->timeout = HAL_GetTick() + 1500;
 		else
@@ -774,15 +782,17 @@ static void runningVerTextDisplay()
 		{
 			if (actAnim->tailAnimation == HT_BLINK)
 				actAnim->state = anim_start_tail_anim;
-			else if (actAnim->tailAnimation == HT_BLANK)
-				actAnim->state = anim_end;
 			else
 				actAnim->state = anim_end;
 		}
 	}
 	else if (actAnim->direction == SD_UPWARD)
 	{
-		hThresshold = 0 - (int32_t) fb->maxBuf * MATRIX_MAX_HEIGHT;
+		if (actAnim->tailAnimation == HT_BLANK)
+			hThresshold = 0 - (int32_t) fb->maxBuf * MATRIX_MAX_HEIGHT;
+		else
+			hThresshold = 0 - (int32_t) (fb->maxBuf - 1) * MATRIX_MAX_HEIGHT;
+
 		if (actAnim->currentY % MATRIX_MAX_HEIGHT == 0)
 			actAnim->timeout = HAL_GetTick() + 1500;
 		else
@@ -793,8 +803,6 @@ static void runningVerTextDisplay()
 		{
 			if (actAnim->tailAnimation == HT_BLINK)
 				actAnim->state = anim_start_tail_anim;
-			else if (actAnim->tailAnimation == HT_BLANK)
-				actAnim->state = anim_end;
 			else
 				actAnim->state = anim_end;
 		}
@@ -815,8 +823,16 @@ static void runningHorTextDisplay()
 		xAnimEndPos += MATRIX_MAX_WIDTH;
 	if (xAnimEndPos >= MATRIX_MAX_WIDTH)
 	{
-		actAnim->currentX--;
-		actAnim->timeout = HAL_GetTick() + 25;
+		if (actAnim->direction == SD_LEFT_TO_RIGHT)
+		{
+			actAnim->currentX--;
+			actAnim->timeout = HAL_GetTick() + 25;
+		}
+		else
+		{
+			actAnim->state = anim_end;
+			actAnim->timeout = HAL_GetTick() + 1000;
+		}
 	}
 	else
 	{
@@ -844,7 +860,10 @@ static void displayTextAnimation()
 	case anim_to_start:
 		/* format text according to scrolling direction */
 		actAnim->currentX = 0;
-		actAnim->currentY = (MATRIX_MAX_HEIGHT - 8 * dt->fontSize) / 2 + (dt->fontSize / 2);
+		if (dt->animation.vAlign == 1)
+			actAnim->currentY = 0;
+		else
+			actAnim->currentY = (MATRIX_MAX_HEIGHT - 8 * dt->fontSize) / 2 + (dt->fontSize / 2);
 		if ((actAnim->direction == SD_DOWNWARD) || (actAnim->direction == SD_UPWARD))
 		{
 			parsingFlipText();
@@ -901,10 +920,10 @@ static void displayTextAnimation()
 	case anim_running:
 		if (HAL_GetTick() >= actAnim->timeout)
 		{
-			if (actAnim->direction == SD_LEFT_TO_RIGHT)
-				runningHorTextDisplay();
-			else if ((actAnim->direction == SD_DOWNWARD) || (actAnim->direction == SD_UPWARD))
+			if ((actAnim->direction == SD_DOWNWARD) || (actAnim->direction == SD_UPWARD))
 				runningVerTextDisplay();
+			else
+				runningHorTextDisplay();
 		}
 		break;
 	case anim_start_tail_anim:
