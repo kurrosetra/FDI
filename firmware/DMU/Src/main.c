@@ -160,6 +160,8 @@ typedef struct
 uint16_t fps = 0;
 #endif	//if DEBUG==1
 
+#define SW_VERSION				"v1.2.1b"
+
 #define CMD_BUFSIZE				512
 #define TEXT_COLOR				0b001
 
@@ -291,15 +293,17 @@ int main(void)
 	HAL_IWDG_Refresh(&hiwdg);
 
 	rgb_frame_clear(0);
+	char version[32];
+	uint16_t versionLen = sprintf(version, "%s", SW_VERSION);
 	char headerStart[32];
 	uint16_t headerLen = sprintf(headerStart, "RESPATI");
 	uint8_t headerSize = 1;
 	uint8_t headerColor = TEXT_COLOR;
-	rgb_print((MATRIX_MAX_WIDTH - 6 * headerSize * headerLen) / 2, 0, headerStart, headerLen,
-			headerColor, headerSize);
-//	rgb_print((MATRIX_MAX_WIDTH - 6 * headerSize * headerLen) / 2,
-//			(MATRIX_MAX_HEIGHT - 8 * headerSize) / 2, headerStart, headerLen, headerColor,
-//			headerSize);
+//	rgb_print((MATRIX_MAX_WIDTH - 6 * headerSize * headerLen) / 2, 0, headerStart, headerLen,
+//			headerColor, headerSize);
+	rgb_print(0, 0, headerStart, headerLen, headerColor, headerSize);
+	rgb_print(0, 8, SW_VERSION, versionLen, headerColor, headerSize);
+
 	swapBufferStart = 1;
 
 	for ( uint8_t i = 0; i < 5; i++ )
@@ -1115,7 +1119,7 @@ static HAL_StatusTypeDef parsingCommand(char *cmd)
 		dt->defaultMode = 0;
 		/* fontsize */
 		/* timeout in 1s */
-		dt->timeout = (param1 >> PB_Timeout_bit) & 0xFF;
+		dt->timeout = (param1 >> PB_Timeout_bit) & 0x1F;
 		dt->timeout *= 1000;  //convert to ms
 		dt->timeout += HAL_GetTick();  // add to current time
 		/* head animation */
@@ -1172,14 +1176,6 @@ static HAL_StatusTypeDef parsingCommand(char *cmd)
 	else
 		rText.DefaultText = *dt;
 
-//	char buf[DISPLAY_TEXT_MAX_SIZE];
-//	uint16_t bufLen;
-//	bufLen = sprintf(buf, "%d %X %X %d %d %d\r\n%s", dt->type, param1, param2, dt->color,
-//			dt->fontSize, dt->defaultMode, dt->msg);
-//	rgb_frame_clear(0);
-//	rgb_print(0, 0, buf, bufLen, 1, 1);
-//	swapBufferStart = 1;
-
 	return HAL_OK;
 }
 
@@ -1220,12 +1216,12 @@ static void commandInit()
 	dt->fontSize = 2;
 	dt->type = DISPLAY_TEXT;
 	dt->timeout = HAL_GetTick() + CMD_TIMEOUT;
-	sprintf(dt->msg, "PT KERETA API INDONESIA (PERSERO)");
+	sprintf(dt->msg, "PT INDUSTRI KERETA API (PERSERO). MADIUN");
 
 	dt->animation.alignment = TA_LEFT;
 	dt->animation.direction = SD_LEFT_TO_RIGHT;
-	dt->animation.headAnimation = HT_NONE;
-	dt->animation.tailAnimation = HT_NONE;
+	dt->animation.headAnimation = HT_BLANK;
+	dt->animation.tailAnimation = HT_BLANK;
 
 //	char buf[DISPLAY_TEXT_MAX_SIZE];
 //	uint16_t bufLen;
